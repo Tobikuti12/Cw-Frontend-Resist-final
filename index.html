@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>After School Lessons</title>
+    <link rel="stylesheet" href="AfterSchoolLessons.css">
+    <script src="https://cdn.jsdelivr.net/npm/vue@2.7.16/dist/vue.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
+          crossorigin="anonymous" referrerpolicy="no-referrer" />
+</head>
+<body>
+<div id="app">
+    <header>
+        <!-- Cart button: enabled only when cart has items -->
+        <button v-on:click="showCheckout" v-if="cartItemCount > 0">
+            {{ cartItemCount }} <span class="fa-solid fa-cart-shopping"></span> CheckOut
+        </button>
+        <button disabled v-else>
+            <span class="fa-solid fa-cart-shopping"></span> CheckOut
+        </button>
+    </header>
+
+    <main>
+        <!-- ── LESSONS PAGE ──────────────────────────────────────── -->
+        <div v-if="showProduct">
+            <h1 v-text="sitename"></h1>
+
+            <!-- SEARCH BAR — calls back-end as you type -->
+            <div class="search-bar">
+                <input
+                    type="text"
+                    v-model="searchText"
+                    v-on:input="searchLessons"
+                    placeholder="Search lessons..."
+                />
+            </div>
+
+            <!-- SORT BAR -->
+            <div class="sort-bar">
+                <select v-model="sortBy">
+                    <option value="title">Sort by Subject</option>
+                    <option value="location">Sort by Location</option>
+                    <option value="price">Sort by Price</option>
+                    <option value="availableInventory">Sort by Spaces</option>
+                </select>
+                <select v-model="sortOrder">
+                    <option value="asc">Ascending</option>
+                    <option value="desc">Descending</option>
+                </select>
+            </div>
+
+            <!-- LOADING / EMPTY STATES -->
+            <p v-if="loading">Loading lessons…</p>
+            <p v-else-if="sortedProducts.length === 0">No lessons found.</p>
+
+            <!-- LESSON CARDS — v-for required by rubric -->
+            <div v-for="product in sortedProducts" :key="product.id" class="product-card">
+                <img v-bind:src="'https://YOUR-BACKEND-URL/images/' + product.image" alt="Lesson Image"
+                     onerror="this.src='image/placeholder.png'">
+                <div>
+                    <h2 v-text="product.title"></h2>
+                    <!-- Font Awesome icon per lesson -->
+                    <span v-html="product.icon || '<i class=\'fa-solid fa-book\'></i>'"></span>
+                    <p>Price: £{{ product.price }}</p>
+                    <p>Location: {{ product.location }}</p>
+                    <p>Spaces left: {{ product.availableInventory - cartCount(product.id) }}</p>
+                    <!-- Star rating -->
+                    <div>
+                        <span v-for="n in product.rating">★</span>
+                        <span v-for="n in 5 - product.rating">☆</span>
+                    </div>
+                    <!-- Add to Cart: enabled when spaces > 0 -->
+                    <button class="addtocart"
+                            v-on:click="addtocart(product)"
+                            v-if="canAddToCart(product)">
+                        Add to cart
+                    </button>
+                    <button disabled v-else>Add to cart</button>
+
+                    <span v-if="product.availableInventory - cartCount(product.id) === 0">All out!</span>
+                    <span v-else-if="product.availableInventory - cartCount(product.id) < 5">
+                        Only {{ product.availableInventory - cartCount(product.id) }} left!
+                    </span>
+                    <span v-else>BUY NOW!</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── CART / CHECKOUT PAGE ──────────────────────────────── -->
+        <div v-else>
+            <h1>Shopping Cart</h1>
+            <p v-if="cart.length === 0">Your cart is empty.</p>
+            <ul>
+                <li v-for="(item, index) in cart" :key="index">
+                    <img :src="item.image" alt="Product Image" style="width:50px">
+                    {{ item.title }} — £{{ item.price }}
+                    <!-- Remove from cart: adds item back to lesson list -->
+                    <button v-on:click="deleteitem(index)">Remove</button>
+                </li>
+            </ul>
+
+            <!-- CHECKOUT FORM -->
+            <h2>Checkout</h2>
+            <p>
+                <strong>Name:</strong>
+                <input v-model.trim="order.name" placeholder="Letters only" />
+                <span v-if="order.name && !validName" style="color:red">
+                    Name must contain letters only
+                </span>
+            </p>
+            <p>
+                <strong>Phone:</strong>
+                <input v-model.trim="order.phone" placeholder="Numbers only" />
+                <span v-if="order.phone && !validPhone" style="color:red">
+                    Phone must contain numbers only
+                </span>
+            </p>
+
+            <!-- Checkout button: only enabled when name AND phone are valid -->
+            <button v-if="!canCheckout" disabled>Checkout</button>
+            <button v-else v-on:click="submitOrder">Checkout</button>
+
+            <!-- Confirmation message shown after order submitted -->
+            <p v-if="orderSubmitted" style="color:green; font-weight:bold;">
+                ✅ Order submitted successfully!
+            </p>
+        </div>
+    </main>
+</div>
+
+<script>
+// ── CHANGE THIS TO YOUR DEPLOYED BACK-END URL ──────────────────────────────
+// e.g. 'https://your-app.onrender.com'  or  'http://localhost:3000'
+const API_BASE = 'http://localhost:3000';
+
+let webstore = new Vue({
+    el: '#app',
+    data: {
+        sitename: 'After School Lessons',
+        products: [],           // loaded from back-end via fetch
+        cart: [],
+        showProduct: true,
+        sortBy: 'title',
+        sortOrder: 'asc',
+        searchText: '',
+        loading: true,
+        orderSubmitted: false,
+        order: {
+            name: '',
+            phone: ''
+        }
+    },
+
+    // ── LIFECYCLE: fetch lessons on page load ──────────────────────────────
+    created() {
+        this.fetchLessons();
+    },
+
+    methods: {
+
+        // ── FETCH: GET all lessons from back-end ───────────────────────────
+        fetchLessons() {
+            this.loading = true;
+            fetch(`${API_BASE}/lessons`)
+                .then(res => res.json())
+                .then(data => {
+                    this.products = data;
+                    this.loading = false;
+                })
+                .catch(err => {
+                    console.error('Error loading lessons:', err);
+                    this.loading = false;
+                });
+        },
+
+        // ── FETCH: GET search results from back-end (search-as-you-type) ──
+        searchLessons() {
+            const q = this.searchText.trim();
+            if (q === '') {
+                // Empty search — reload all lessons
+                this.fetchLessons();
+                return;
+            }
+            fetch(`${API_BASE}/search?q=${encodeURIComponent(q)}`)
+                .then(res => res.json())
+                .then(data => {
+                    this.products = data;
+                })
+                .catch(err => console.error('Search error:', err));
+        },
+
+        // ── FETCH: POST order, then PUT each lesson's available spaces ─────
+        submitOrder() {
+            // Build arrays of lesson IDs and spaces purchased
+            const lessonIDs = this.cart.map(item => item.id);
+            const spaces = lessonIDs.map(id =>
+                this.cart.filter(item => item.id === id).length
+            );
+
+            // POST: save the order
+            fetch(`${API_BASE}/orders`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: this.order.name,
+                    phone: this.order.phone,
+                    lessonIDs,
+                    spaces
+                })
+            })
+            .then(res => res.json())
+            .then(() => {
+                // PUT: update availableInventory for each lesson in the cart
+                const uniqueLessons = [...new Set(lessonIDs)];
+                const putPromises = uniqueLessons.map(id => {
+                    const bought = this.cart.filter(item => item.id === id).length;
+                    const lesson = this.products.find(p => p.id === id);
+                    const newSpaces = (lesson ? lesson.availableInventory : 0) - bought;
+                    return fetch(`${API_BASE}/lessons/${id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ availableInventory: newSpaces })
+                    });
+                });
+                return Promise.all(putPromises);
+            })
+            .then(() => {
+                this.orderSubmitted = true;
+                this.cart = [];
+                this.order = { name: '', phone: '' };
+                // Refresh lessons to show updated spaces
+                this.fetchLessons();
+            })
+            .catch(err => console.error('Order submission error:', err));
+        },
+
+        // ── CART HELPERS ───────────────────────────────────────────────────
+        addtocart(product) {
+            this.cart.push(product);
+        },
+        canAddToCart(product) {
+            return product.availableInventory > this.cartCount(product.id);
+        },
+        cartCount(id) {
+            return this.cart.filter(p => p.id === id).length;
+        },
+        showCheckout() {
+            this.showProduct = !this.showProduct;
+            this.orderSubmitted = false;
+        },
+        deleteitem(index) {
+            this.cart.splice(index, 1);
+        }
+    },
+
+    computed: {
+        cartItemCount() {
+            return this.cart.length;
+        },
+
+        // Validate name: letters (and spaces) only
+        validName() {
+            return /^[a-zA-Z\s]+$/.test(this.order.name);
+        },
+
+        // Validate phone: digits only
+        validPhone() {
+            return /^[0-9]+$/.test(this.order.phone);
+        },
+
+        // Checkout enabled only when both fields are non-empty and valid
+        canCheckout() {
+            return this.order.name.length > 0 &&
+                   this.order.phone.length > 0 &&
+                   this.validName &&
+                   this.validPhone;
+        },
+
+        // Sort the displayed products
+        sortedProducts() {
+            return [...this.products].sort((a, b) => {
+                let A = a[this.sortBy];
+                let B = b[this.sortBy];
+                if (typeof A === 'string') { A = A.toLowerCase(); B = B.toLowerCase(); }
+                return this.sortOrder === 'asc' ? (A > B ? 1 : -1) : (A < B ? 1 : -1);
+            });
+        }
+    }
+});
+</script>
+</body>
+</html>
